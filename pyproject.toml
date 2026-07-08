@@ -1,0 +1,60 @@
+[project]
+name = "suite2p"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "cellpose>=4.2.1.1",
+    "matplotlib>=3.11.0",
+    "natsort>=8.4.0",
+    "numba>=0.66.0",
+    "numpy>=2.4,<2.5",
+    "packaging>=26.2",
+    "pynwb>=4.0.0",
+    "pyqt6>=6.11.0",
+    "pyqtgraph>=0.14.0",
+    "qtpy>=2.4.3",
+    "rastermap>=1.0",
+    "scanimage-tiff-reader>=1.4.1.4",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.0",
+    "superqt>=0.8.2",
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+    "tqdm>=4.68.4",
+]
+
+[project.scripts]
+suite2p = "suite2p.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.uv.sources]
+
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'win32'" },
+]
+
+torchvision = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true

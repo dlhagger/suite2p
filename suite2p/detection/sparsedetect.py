@@ -14,7 +14,6 @@ from numpy.linalg import norm
 
 from scipy.interpolate import RectBivariateSpline
 from scipy.ndimage import maximum_filter, uniform_filter
-from scipy.stats import mode
 
 from . import utils
 
@@ -430,29 +429,107 @@ class EstimateMode(Enum):
     Estimated = "estimated"
 
 
-def estimate_spatial_scale(I):
+def estimate_spatial_scale(I, max_peaks=50, min_valid_peaks=5,
+                           min_confidence=0.15, min_cell_evidence=0.15):
     """
     Estimate the dominant spatial scale from multi-scale correlation maps.
 
-    Finds the scale index that appears most frequently among the top 50
-    brightest local maxima in the max-projected correlation image.
+    Finds bright local maxima in the max-projected correlation image and
+    combines rank-weighted votes from the documented cell scales (1-4).
+    Scale 0 is retained as a diagnostic for pixel-scale structure, but is not
+    considered a valid cell scale. Peaks dominated by scale 0 contribute less
+    according to the relative strength of their best valid-scale response.
 
     Parameters
     ----------
     I : numpy.ndarray
         Multi-scale correlation maps of shape (n_scales, Ly, Lx).
+    max_peaks : int, optional
+        Maximum number of bright local maxima to use.
+    min_valid_peaks : int, optional
+        Minimum number of peaks with positive cell-scale evidence.
+    min_confidence : float, optional
+        Minimum relative margin between the best and second-best scale scores.
+    min_cell_evidence : float, optional
+        Minimum mean ratio of cell-scale response to overall response.
 
     Returns
     -------
-    im : int
-        Index of the estimated best spatial scale.
+    scale : int or None
+        Estimated spatial scale in [1, 4], or None when the evidence is
+        insufficient or ambiguous.
     """
-    I0 = I.max(axis=0)
-    imap = np.argmax(I, axis=0).flatten()
-    ipk = np.abs(I0 - maximum_filter(I0, size=(11, 11))).flatten() < 1e-4
-    isort = np.argsort(I0.flatten()[ipk])[::-1]
-    im, _ = mode(imap[ipk][isort[:50]], keepdims=True)
-    return im.item()
+    if I.ndim != 3:
+        raise ValueError("I must have shape (n_scales, Ly, Lx)")
+
+    max_scale = min(4, I.shape[0] - 1)
+    if max_scale < 1:
+        logger.info("Spatial scale estimate inconclusive: no cell-scale maps")
+        return None
+
+    responses = np.where(np.isfinite(I[:max_scale + 1]), I[:max_scale + 1],
+                         -np.inf)
+    I0 = responses.max(axis=0)
+    local_max = np.abs(I0 - maximum_filter(I0, size=(11, 11))) < 1e-4
+    peak_indices = np.flatnonzero(local_max.flatten() & np.isfinite(I0.flatten()) &
+                                 (I0.flatten() > 0))
+
+    if peak_indices.size == 0:
+        logger.info("Spatial scale estimate inconclusive: no positive local maxima")
+        return None
+
+    peak_values = I0.flatten()[peak_indices]
+    order = np.argsort(peak_values, kind="stable")[::-1][:max_peaks]
+    peak_indices = peak_indices[order]
+
+    peak_responses = np.maximum(
+        responses.reshape(max_scale + 1, -1)[:, peak_indices], 0)
+    raw_scales = np.argmax(peak_responses, axis=0)
+    cell_responses = peak_responses[1:]
+    cell_scales = np.argmax(cell_responses, axis=0) + 1
+    cell_strength = cell_responses.max(axis=0)
+    total_strength = peak_responses.max(axis=0)
+    cell_evidence = np.divide(
+        cell_strength, total_strength, out=np.zeros_like(cell_strength),
+        where=total_strength > 0)
+
+    rank_weights = np.linspace(1.0, 0.25, peak_indices.size)
+    valid = (cell_strength > 0) & np.isfinite(cell_evidence)
+    raw_counts = np.bincount(raw_scales, minlength=max_scale + 1)
+    counts = np.bincount(cell_scales[valid], minlength=max_scale + 1)
+    scores = np.bincount(
+        cell_scales[valid],
+        weights=rank_weights[valid] * cell_evidence[valid],
+        minlength=max_scale + 1,
+    )
+
+    if valid.sum() < min_valid_peaks or scores[1:].sum() <= 0:
+        logger.info(
+            "Spatial scale estimate inconclusive: valid_peaks=%d, scale0_peaks=%d",
+            valid.sum(), raw_counts[0])
+        return None
+
+    scale = int(np.argmax(scores[1:]) + 1)
+    ranked_scores = np.sort(scores[1:])
+    best_score = ranked_scores[-1]
+    second_score = ranked_scores[-2] if ranked_scores.size > 1 else 0.
+    confidence = (best_score - second_score) / max(best_score, 1e-12)
+    mean_cell_evidence = np.average(
+        cell_evidence[valid], weights=rank_weights[valid])
+
+    logger.info(
+        "Spatial scale estimate: valid_peaks=%d, scale0_peaks=%d, "
+        "counts=%s, scores=%s, winner=%d, confidence=%.2f, cell_evidence=%.2f",
+        valid.sum(), raw_counts[0], counts[1:].tolist(),
+        np.round(scores[1:], 2).tolist(), scale, confidence,
+        mean_cell_evidence)
+
+    if confidence < min_confidence or mean_cell_evidence < min_cell_evidence:
+        logger.info(
+            "Spatial scale estimate inconclusive: confidence or cell-scale "
+            "evidence below threshold")
+        return None
+    return scale
 
 
 def find_best_scale(I, spatial_scale):
@@ -483,11 +560,12 @@ def find_best_scale(I, spatial_scale):
         return max(1, min(4, spatial_scale)), EstimateMode.Forced
     else:
         scale = estimate_spatial_scale(I=I)
-        if scale > 0:
+        if scale is not None:
             return scale, EstimateMode.Estimated
         else:
             warn(
-                "Spatial scale estimation failed.  Setting spatial scale to 1 in order to continue."
+                "Spatial scale estimation was inconclusive. Setting spatial "
+                "scale to 1 in order to continue."
             )
             return 1, EstimateMode.Forced
 

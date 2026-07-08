@@ -14,7 +14,7 @@ Sparsery is the main detection algorithm. It performs a greedy matrix decomposit
 
 1. **Neuropil removal**: Each binned frame is divided by the per-pixel shot noise estimate and high-pass filtered spatially with a uniform filter of size `settings['detection']['sparsery_settings']['highpass_neuropil']` pixels.
 
-2. **Multi-scale template matching**: Variance explained maps are computed for uniform square templates of sizes 3x3, 6x6, 12x12, 24x24, and 48x48 pixels. The optimal spatial scale is estimated automatically from the peaks of these maps, or can be set manually with `settings['detection']['sparsery_settings']['spatial_scale']` (integer 1-4, corresponding to 6x6 through 48x48).
+2. **Multi-scale template matching**: Variance explained maps are computed for uniform square templates of sizes 3x3, 6x6, 12x12, 24x24, and 48x48 pixels. The optimal spatial scale is estimated automatically using rank-weighted evidence from bright local peaks at the cell scales (6x6 through 48x48). The 3x3 response is treated as a pixel-scale noise diagnostic and downweights affected peaks. Ambiguous or weak estimates fall back safely to 6x6. The scale can instead be set manually with `settings['detection']['sparsery_settings']['spatial_scale']` (integer 1-4).
 
 3. **Iterative ROI extraction**: On each iteration, the location with the highest variance explained is selected as a candidate ROI. Active frames are identified as those exceeding a temporal threshold `Th2 = 5 * spatial_scale * threshold_scaling`. The ROI mask is refined by iteratively extending pixels whose mean intensity on active frames exceeds one-fifth of the maximum. Activity is subtracted from the movie before searching for the next ROI.
 
@@ -29,7 +29,7 @@ Detection stops when the variance explained falls below a threshold scaled by `s
 | `threshold_scaling` | Multiplier on the temporal threshold for detecting ROIs. Lower values find more ROIs, higher values find fewer (default: 1.0) |
 | `highpass_neuropil` | Spatial high-pass filter size in pixels for neuropil removal, set higher if zoom is high - should be ~3x the diameter of the cell in pixels (default: 25) |
 | `max_ROIs` | Maximum number of ROIs to detect, set larger if hitting limit (default: 5000) |
-| `spatial_scale` | Override automatic scale estimation, which is used for determining thresholds (valid inputs are 1-4, corresponding to template sizes 6x6 to 48x48). Set to 0 for automatic (default: 0) |
+| `spatial_scale` | Override confidence-gated automatic scale estimation, which is used for determining thresholds (valid inputs are 1-4, corresponding to template sizes 6x6 to 48x48). Set to 0 for automatic (default: 0) |
 
 ## Sourcery
 
