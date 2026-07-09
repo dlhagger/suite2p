@@ -54,6 +54,7 @@ coverage.xml
 # Test Data
 data/
 scripts/test_data/
+models/
 
 # Translations
 *.mo

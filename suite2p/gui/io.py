@@ -67,14 +67,25 @@ def make_masks_and_enable_buttons(parent):
     # make color arrays for various views
     masks.make_colors(parent)
 
-    if parent.iscell.sum() > 0:
+    if ncells == 0:
+        parent.ichosen = 0
+        parent.imerge = []
+        parent.iflip = 0
+        parent.ROIedit.setText("0")
+        for k in range(1, len(parent.stats_to_show) + 1):
+            parent.ROIstats[k].setText(parent.stats_to_show[k - 1] + ": --")
+    elif parent.iscell.sum() > 0:
         ich = np.nonzero(parent.iscell)[0][0]
+        parent.ichosen = int(ich)
+        parent.imerge = [int(ich)]
+        parent.iflip = int(ich)
+        parent.ichosen_stats()
     else:
         ich = 0
-    parent.ichosen = int(ich)
-    parent.imerge = [int(ich)]
-    parent.iflip = int(ich)
-    parent.ichosen_stats()
+        parent.ichosen = int(ich)
+        parent.imerge = [int(ich)]
+        parent.iflip = int(ich)
+        parent.ichosen_stats()
     parent.comboBox.setCurrentIndex(2)
     # colorbar
     parent.colormat = masks.draw_colorbar()
@@ -103,7 +114,8 @@ def make_masks_and_enable_buttons(parent):
     parent.mode_change(2)
     parent.show()
     # no classifier loaded
-    classgui.activate(parent, False)
+    if ncells:
+        classgui.activate(parent, False)
 
 
 def enable_views_and_classifier(parent):
@@ -242,7 +254,8 @@ def load_files(name):
     """ give stat.npy path and load all needed files for suite2p """
     try:
         stat = np.load(name, allow_pickle=True)
-        ypix = stat[0]["ypix"]
+        if stat.size:
+            stat[0]["ypix"]
     except (ValueError, KeyError, OSError, RuntimeError, TypeError, NameError):
         print("ERROR: this is not a stat.npy file :( "
               "(needs stat[n]['ypix']!)")
@@ -360,7 +373,20 @@ def load_to_GUI(parent, basename, procs):
             parent.stat[n]["chan2_prob"] = parent.probredcell[n]
         if "snr" not in parent.stat[0]:
             dF = Fcell.copy() - 0.7 * Fneu
-            snr = 1 - 0.5 * np.diff(dF, axis=1).var(axis=1) / dF.var(axis=1)        
+            trace_var = dF.var(axis=1)
+            if dF.shape[1] > 1:
+                diff_var = np.diff(dF, axis=1).var(axis=1)
+            else:
+                diff_var = np.zeros(dF.shape[0], dtype=dF.dtype)
+            valid = trace_var > 0
+            snr = np.zeros_like(trace_var, dtype=np.float32)
+            snr[valid] = 1 - np.divide(
+                0.5 * diff_var[valid],
+                trace_var[valid],
+                out=np.zeros_like(trace_var[valid], dtype=np.float32),
+                where=trace_var[valid] > 0,
+            )
+            snr = np.nan_to_num(snr)
             del dF
             for n in range(len(parent.stat)):
                 parent.stat[n]["snr"] = snr[n]
@@ -368,7 +394,7 @@ def load_to_GUI(parent, basename, procs):
     parent.stat = np.array(parent.stat)
     make_masks_and_enable_buttons(parent)
     parent.ichosen = 0
-    parent.imerge = [0]
+    parent.imerge = [0] if len(parent.stat) else []
     for n in range(len(parent.stat)):
         if "imerge" not in parent.stat[n]:
             parent.stat[n]["imerge"] = []
@@ -506,8 +532,8 @@ def load_custom_mask(parent):
     if cloaded:
         parent.custom_mask = mask
         masks.custom_masks(parent)
-        M = masks.draw_masks(parent)
-        b = len(parent.colors) + 1
+        masks.draw_masks(parent)
+        b = len(parent.color_names) - 1
         parent.colorbtns.button(b).setEnabled(True)
         parent.colorbtns.button(b).setStyleSheet(parent.styleUnpressed)
         parent.colorbtns.button(b).setChecked(True)

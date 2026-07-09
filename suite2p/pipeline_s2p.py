@@ -16,7 +16,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-from . import extraction, registration, detection, classification, default_settings, default_db
+from . import (
+    extraction,
+    registration,
+    detection,
+    classification,
+    default_settings,
+    default_db,
+    manual_rois,
+)
 from .registration import zalign
 
 def pipeline(save_path, f_reg, f_raw=None, f_reg_chan2=None, f_raw_chan2=None,
@@ -132,8 +140,75 @@ def pipeline(save_path, f_reg, f_raw=None, f_reg_chan2=None, f_raw_chan2=None,
             reg_outputs["badframes"] = np.zeros(n_frames, dtype="bool")
             np.save(os.path.join(save_path, "reg_outputs.npy"), reg_outputs)
 
+    roi_source = settings["run"].get("roi_source", "automatic")
+    if roi_source not in {"automatic", "manual"}:
+        raise ValueError("settings['run']['roi_source'] must be 'automatic' or 'manual'")
+
+    if roi_source == "manual" and stat is None:
+        logger.info("----------- MANUAL ROI SESSION")
+        t11 = time.time()
+        detect_outputs = manual_rois.prepare_manual_images(
+            f_reg,
+            reg_outputs,
+            tau=settings["tau"],
+            fs=settings["fs"],
+            detection_settings=settings["detection"],
+        )
+        if "meanImg" not in reg_outputs and "meanImg_crop" in detect_outputs:
+            detect_outputs["meanImg"] = detect_outputs["meanImg_crop"]
+        np.save(os.path.join(save_path, "detect_outputs.npy"), detect_outputs)
+
+        n_frames = f_reg.shape[0]
+        stat = np.array([], dtype=object)
+        F = np.zeros((0, n_frames), np.float32)
+        Fneu = np.zeros_like(F)
+        spks = np.zeros_like(F)
+        iscell = np.zeros((0, 2), np.float32)
+        if f_reg_chan2 is None:
+            F_chan2 = Fneu_chan2 = redcell = None
+        else:
+            F_chan2 = np.zeros_like(F)
+            Fneu_chan2 = np.zeros_like(F)
+            redcell = np.zeros((0, 2), np.float32)
+        zcorr = np.zeros((0,), np.float32)
+
+        np.save(os.path.join(save_path, "stat.npy"), stat)
+        np.save(os.path.join(save_path, "F.npy"), F)
+        np.save(os.path.join(save_path, "Fneu.npy"), Fneu)
+        np.save(os.path.join(save_path, "spks.npy"), spks)
+        np.save(os.path.join(save_path, "iscell.npy"), iscell)
+        np.save(os.path.join(save_path, "zcorr.npy"), zcorr)
+        if F_chan2 is not None:
+            np.save(os.path.join(save_path, "F_chan2.npy"), F_chan2)
+            np.save(os.path.join(save_path, "Fneu_chan2.npy"), Fneu_chan2)
+            np.save(os.path.join(save_path, "redcell.npy"), redcell)
+
+        plane_times["manual_session"] = time.time() - t11
+        plane_times["total_plane_runtime"] = time.time() - t1
+        logger.info(
+            "Manual ROI session initialized with 0 ROIs in %0.2f sec. "
+            "Open the plane folder in the GUI to draw or point-prompt masks.",
+            plane_times["manual_session"],
+        )
+        return (
+            reg_outputs,
+            detect_outputs,
+            stat,
+            F,
+            Fneu,
+            F_chan2,
+            Fneu_chan2,
+            spks,
+            iscell,
+            redcell,
+            zcorr,
+            plane_times,
+        )
+
     if not settings["run"]["do_detection"]:
-        logger.warn("WARNING: skipping cell detection (settings['run']['do_detection']=False)")
+        logger.warning(
+            "WARNING: skipping cell detection (settings['run']['do_detection']=False)"
+        )
         plane_times["total_plane_runtime"] = time.time() - t1
         return reg_outputs, None, None, None, None, None, None, None, None, None, None, plane_times
     

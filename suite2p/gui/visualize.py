@@ -9,12 +9,37 @@ import pyqtgraph as pg
 from qtpy import QtGui, QtCore
 from qtpy.QtWidgets import QStyle
 from qtpy.QtWidgets import QWidget, QSlider, QMainWindow, QGridLayout, QStyleOptionSlider, QApplication, QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox
+try:
+    from matplotlib import colormaps
+except ImportError:
+    colormaps = None
 from matplotlib import cm
 from rastermap.rastermap import Rastermap
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import zscore
 
 from . import masks
+
+
+def colormap_lut(name):
+    """Return an 8-bit RGBA lookup table for pyqtgraph images."""
+    if colormaps is not None:
+        colormap = colormaps.get_cmap(name)
+    else:
+        colormap = cm.get_cmap(name)
+    return (colormap(np.linspace(0.0, 1.0, 256)) * 255).astype(np.uint8)
+
+
+def zscore_rows(data):
+    """Row-wise z-score without warnings/NaNs for constant traces."""
+    data = np.asarray(data, dtype=np.float32)
+    mean = data.mean(axis=1, keepdims=True)
+    std = data.std(axis=1, keepdims=True)
+    return np.divide(
+        data - mean,
+        std,
+        out=np.zeros_like(data, dtype=np.float32),
+        where=std > 0,
+    )
 
 
 # custom vertical label
@@ -226,7 +251,7 @@ class SatSlider(RangeSlider):
 class NeuronSlider(RangeSlider):
 
     def __init__(self, parent=None):
-        super(SatSlider, self).__init__(parent)
+        super(NeuronSlider, self).__init__(parent)
         self.parent = parent
         self.setMinimum(0)
         self.setMaximum(100)
@@ -308,8 +333,8 @@ class VisWindow(QMainWindow):
                 self.cells, :] - 0.7 * self.parent.Fneu[self.cells, :]
         else:
             sp = self.parent.Spks[self.cells, :]
-        sp = np.squeeze(sp)
-        sp = zscore(sp, axis=1)
+        sp = np.atleast_2d(np.asarray(sp))
+        sp = zscore_rows(sp)
         self.sp = np.maximum(-4, np.minimum(8, sp)) + 4
         self.sp /= 12
         self.tsort = np.arange(0, sp.shape[1]).astype(np.int32)
@@ -337,12 +362,8 @@ class VisWindow(QMainWindow):
         self.p3.setMouseEnabled(x=False, y=False)
         #self.p3.getAxis("left").setTicks([[(0,"")]])
         self.p3.setLabel("bottom", "time")
-        # set colormap to viridis
-        colormap = cm.get_cmap("gray_r")
-        colormap._init()
-        lut = (colormap._lut * 255).view(
-            np.ndarray)  # Convert matplotlib colormap from 0-1 to 0 -255 for Qt
-        lut = lut[0:-3, :]
+        # Convert matplotlib colormap from 0-1 to 0-255 for Qt.
+        lut = colormap_lut("gray_r")
         # apply the colormap
         self.img.setLookupTable(lut)
         self.imgROI.setLookupTable(lut)
@@ -378,7 +399,10 @@ class VisWindow(QMainWindow):
         self.LINE = pg.RectROI([-1, nn * .4], [nt * .25, nn * .2],
                                maxBounds=QtCore.QRectF(-1, -1., nt * .25,
                                                        nn + 1), pen=redpen)
-        self.selected = np.arange(nn * .4, nn * .6, 1, int)
+        y0 = int(np.floor(nn * .4))
+        y1 = int(np.ceil(nn * .6))
+        y1 = min(nn, max(y0 + 1, y1))
+        self.selected = np.arange(y0, y1, dtype=int)
         self.LINE.handleSize = 10
         self.LINE.handlePen = redpen
         # Add top handle
@@ -431,7 +455,7 @@ class VisWindow(QMainWindow):
         self.process.readyReadStandardError.connect(self.stderr_write)
         # disable the button when running the s2p process
         #self.process.started.connect(self.started)
-        self.process.finished.connect(lambda: self.finished(self.parent))
+        self.process.finished.connect(lambda *_: self.finished())
 
         self.win.show()
         self.win.scene().sigMouseClicked.connect(self.plot_clicked)
@@ -544,14 +568,22 @@ class VisWindow(QMainWindow):
         return xrange, yrange
 
     def plot_traces(self):
-        avg = self.spF[np.ix_(self.selected, self.xrange)].mean(axis=0)
+        selected = self.selected
+        if selected.size == 0:
+            selected = np.arange(self.spF.shape[0], dtype=int)
+        xrange = self.xrange
+        if xrange.size == 0:
+            xrange = np.arange(self.spF.shape[1], dtype=int)
+        avg = self.spF[np.ix_(selected, xrange)].mean(axis=0)
         avg -= avg.min()
-        avg /= avg.max()
+        avg_max = avg.max()
+        if avg_max > 0:
+            avg /= avg_max
         self.p3.clear()
-        self.p3.plot(self.xrange, avg, pen=(255, 0, 0))
+        self.p3.plot(xrange, avg, pen=(255, 0, 0))
         if self.bloaded:
             self.p3.plot(self.parent.beh_time, self.parent.beh, pen="w")
-        self.p3.setXRange(self.xrange[0], self.xrange[-1])
+        self.p3.setXRange(xrange[0], xrange[-1])
         self.p3.addItem(self.THRES)
         self.THRES.setZValue(10)  # make sure ROI is drawn above image
 
@@ -569,6 +601,8 @@ class VisWindow(QMainWindow):
 
     def ROI_position(self):
         xrange, _ = self.roi_range(self.ROI)
+        if xrange.size == 0:
+            xrange = np.arange(self.sp.shape[1], dtype=np.int32)
         self.xrange = xrange
         self.imgROI.setImage(self.spF[:, self.xrange])
         self.p2.setXRange(0, self.xrange.size)
@@ -582,7 +616,7 @@ class VisWindow(QMainWindow):
         self.LINE.setZValue(10)
 
         self.THRES.maxBounds = QtCore.QRectF(self.xrange[0] - 1, -5.,
-                                             self.xrange[1] + 1, 10)
+                                             self.xrange[-1] + 1, 10)
         self.THRES.setPos([self.xrange[0] - 1, self.tpos])
         self.THRES.setSize([xrange.size + 1, self.tsize])
         self.THRES.setZValue(10)
@@ -758,7 +792,7 @@ class VisWindow(QMainWindow):
             self.spF = self.spF.T
         else:
             self.spF = self.sp
-        self.spF = zscore(self.spF, axis=1)
+        self.spF = zscore_rows(self.spF)
         self.spF = np.minimum(8, self.spF)
         self.spF = np.maximum(-4, self.spF) + 4
         self.spF /= 12

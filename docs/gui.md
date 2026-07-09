@@ -11,6 +11,14 @@ that’s the most common ROI studied.
 
 You can now **drag and drop** your `stat.npy` files into the GUI!
 
+## Sampling frequency from ScanImage TIFFs
+
+For ScanImage TIFF inputs, the run window reads static TIFF metadata without
+loading image data and fills **Sampling frequency** automatically. Single-plane
+recordings use `scanFrameRate`; multiplane recordings use `scanVolumeRate`, with
+a flyback-aware fallback when needed. The detected rate and metadata key are
+saved with the settings. Editing the field remains a manual override.
+
 ## Different views and colors for ROI panels
 
 ### Views
@@ -218,9 +226,38 @@ surrounded by the red box will show up as white in the GUI.
 
 ## Manual adding of ROIs
 
-You can add ROIs in the File>Manual labelling. You MUST keep the binary file for the
-computing of the mask’s activity across time. When you save and exit the ROIs will be
-added to the *.npy files as the first N ROIs (where N is the number that you drew).
+Set **ROI source** to `manual` in the run settings to register the movie and
+initialize an empty ROI session without running an automatic detector. The
+registered binary is retained even when **Delete binary** is enabled because
+manual trace extraction requires `data.bin`. Selecting manual mode also hides
+automatic detection, classification, and filtering controls that do not affect
+the manual workflow; switching back to `automatic` restores them. The remaining
+manual trace extraction controls configure neuropil subtraction and overlapping
+masks. Turning off **Extract neuropil** hides its dependent controls and saves a
+zero-valued `Fneu`; turning off spike deconvolution hides the baseline controls.
+
+Open the resulting plane's `stat.npy`, then choose **File > Manual labelling**.
+Three mask tools are available:
+
+- **add ROI** or Alt-click creates an editable ellipse.
+- **add polygon** creates an editable irregular polygon.
+- **SAM3 points** enables point-prompted proposals when **Enable SAM3 assist**
+  was selected in the manual run settings, Ultralytics is installed, and
+  `models/sam3.pt` is available. Left-click includes a region,
+  Shift+left-click excludes a region, and **accept SAM** adds the cleaned
+  proposal.
+
+SAM3 is optional and loaded only when its tool is used. The default backend is
+Ultralytics' `SAM` wrapper, which works with the local `models/sam3.pt` checkpoint
+inside the project directory.
+The first prompt loads the model and caches an embedding in the background, so
+the GUI should remain responsive even though the first load can take a while.
+A SAM3 result is a proposal: inspect and refine it before accepting.
+
+Click **extract ROIs** to preview fluorescence and neuropil traces. When saved,
+manual ROIs are added to the beginning of the output arrays. Each accepted mask
+records its source; SAM3 masks also retain their points, labels, score, model
+version, and registered-coordinate provenance in `stat.npy`.
 
 ![image](_static/manual_roi.png)
 

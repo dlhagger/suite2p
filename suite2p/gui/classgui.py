@@ -354,12 +354,13 @@ class ListChooser(QDialog):
 def class_masks(parent):
     c = 6
     istat = parent.probcell
+    istat_min = istat.min() if istat.size else 0.0
+    istat_max = istat.max() if istat.size else 0.0
     parent.colors['colorbar'][c] = [
-        istat.min(), (istat.max() - istat.min()) / 2,
-        istat.max()
+        istat_min, (istat_max - istat_min) / 2 + istat_min,
+        istat_max
     ]
-    istat = istat - istat.min()
-    istat = istat / istat.max()
+    istat = masks.normalize_istat(istat, istat_min, istat_max)
     col = masks.istat_transform(istat, parent.ops_plot['colormap'])
     parent.colors['cols'][c] = col
     parent.colors['istat'][c] = istat.flatten()

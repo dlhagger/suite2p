@@ -36,6 +36,28 @@ For more general usage questions, please use **[forum.image.sc](https://forum.im
 
 **Note on pull requests**: we accept very few pull requests due to the maintenance efforts required to support new code, and we do not accept pull requests from automated code checkers. If you wrote code that interfaces/changes suite2p behavior, a common approach would be to keep that in a fork and pull periodically from the main branch to make sure you have the latest updates.
 
+## Local fork additions: manual ROI-first workflow
+
+This fork adds a manual ROI workflow intended for datasets where automatic ROI detection is not the right first pass. The core idea is to let Suite2p still do the imaging pipeline work it is good at — TIFF loading, ScanImage metadata handling, registration, binary preparation, trace extraction, and GUI visualization — while allowing ROIs to be drawn or prompted manually before traces are extracted.
+
+Highlights:
+
+- **Manual ROI run mode**: in the Run Suite2p GUI, set `ROI source` to `manual` to run registration/preprocessing and prepare an empty ROI session without automatic detection/classification.
+- **Manual trace extraction**: after drawing manual masks, use the manual ROI window's extraction controls to write standard Suite2p outputs such as `stat.npy`, `F.npy`, `Fneu.npy`, `spks.npy`, and `iscell.npy`.
+- **ROI drawing tools**: the manual ROI window supports ellipse ROIs, polygon ROIs, fixed irregular masks, ROI deletion, and trace-save/close state handling.
+- **SAM3 assist through Ultralytics**: optional point-prompted masks are available when `ultralytics` is installed and `models/sam3.pt` exists in the project directory. In SAM3 mode, left-click adds an include point, `Shift` + left-click adds an exclude point, and the model loads/proposes masks in the background so the GUI stays responsive.
+- **ScanImage metadata prefills**: TIFF metadata is used where possible to prefill practical run settings such as sampling frequency, plane/channel counts, saved-channel info, dimensions, bidirectional/resonant notes, and pixel size/diameter estimates.
+- **Existing registered data support**: manual ROI labeling and trace extraction can be performed from an already registered Suite2p output folder; you do not need to rerun registration just to draw or refine masks.
+- **Small/manual dataset robustness**: GUI color maps, Rastermap visualization, custom hue loading, constant traces, empty ROI sessions, and one-ROI edge cases have been hardened for manual workflows.
+
+For SAM3, keep the checkpoint local at:
+
+```text
+models/sam3.pt
+```
+
+The `models/` folder is gitignored so large model files stay out of the repository.
+
 ### CITATION
 
 If you use this package in your research, please cite the [paper](https://www.biorxiv.org/content/10.64898/2026.02.04.703741v1):

@@ -39,13 +39,15 @@ Suite2p can be run with different configurations using the db and settings dicti
 |---|---|---|---|---|
 | `torch_device` | Torch device | `<class 'str'>` | `cuda` | Torch device using GPU ('cuda') or CPU ('cpu'). |
 | `tau` | Ca timescale | `<class 'float'>` | `1.0` | Timescale for deconvolution and binning in seconds. |
-| `fs` | Sampling frequency | `<class 'float'>` | `10.0` | Sampling rate per plane. |
+| `fs` | Sampling frequency | `<class 'float'>` | `10.0` | Sampling rate per plane. Auto-detected from ScanImage TIFF metadata in the run GUI when available; can be manually overridden. |
 | `diameter` | Diameter | `<class 'list'>` | `[12.0, 12.0]` | ROI diameter in Y and X pixels for sourcery and cellpose detection. |
 
 ### run
 
 | Key | GUI Name | Type | Default | Description |
 |---|---|---|---|---|
+| `roi_source` | ROI source | `<class 'str'>` | `automatic` | Choose automatic detection or initialize a registered session for manual masks (`automatic` or `manual`). |
+| `sam3_enabled` | Enable SAM3 assist | `<class 'bool'>` | `False` | Enable optional SAM3 point-prompted masks in manual ROI mode. |
 | `do_registration` | Do registration | `<class 'int'>` | `1` | Whether to motion register data (2 forces re-registration). |
 | `do_regmetrics` | Compute reg metrics | `<class 'bool'>` | `True` | Whether or not to compute registration metrics (requires 1500 frames). |
 | `do_detection` | Do ROI detection | `<class 'bool'>` | `True` | Whether or not to run ROI detection and extraction. |
@@ -138,4 +140,3 @@ Suite2p can be run with different configurations using the db and settings dicti
 | `win_baseline` | Baseline window | `<class 'float'>` | `60.0` | Window (in seconds) for max filter. |
 | `sig_baseline` | Baseline sigma | `<class 'float'>` | `10.0` | Width of Gaussian filter in frames (applied to find constant or before maximin filter). |
 | `prctile_baseline` | Baseline percentile | `<class 'float'>` | `8.0` | Percentile of trace to use as baseline if using 'prctile' for baseline. |
-

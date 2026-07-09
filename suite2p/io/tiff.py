@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from tifffile import imread, TiffFile, TiffWriter
+from tifffile import imread, read_scanimage_metadata, TiffFile, TiffWriter
 
 from . import utils
 
@@ -21,6 +21,363 @@ try:
 except ImportError:
     ScanImageTiffReader = None
     HAS_SCANIMAGE = False
+
+
+def _metadata_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
+def _metadata_float(metadata, key):
+    value = metadata.get(key)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) and value > 0 else None
+
+
+def _metadata_int(metadata, key, default=0):
+    try:
+        return int(metadata.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _metadata_int_list(metadata, key):
+    value = metadata.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return []
+        value = value.strip("[]")
+        values = value.replace(",", " ").split()
+    elif isinstance(value, np.ndarray):
+        values = value.ravel().tolist()
+    elif isinstance(value, (list, tuple)):
+        values = np.asarray(value, dtype=object).ravel().tolist()
+    else:
+        values = [value]
+
+    ints = []
+    for item in values:
+        try:
+            ints.append(int(float(item)))
+        except (TypeError, ValueError):
+            continue
+    return ints
+
+
+def _metadata_fov_um(metadata):
+    value = metadata.get("SI.hRoiManager.imagingFovUm")
+    if value is None:
+        return None
+    try:
+        corners = np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if corners.ndim != 2 or corners.shape[1] < 2:
+        return None
+    width = float(np.ptp(corners[:, 0]))
+    height = float(np.ptp(corners[:, 1]))
+    if not (np.isfinite(width) and np.isfinite(height) and width > 0 and height > 0):
+        return None
+    return [height, width]
+
+
+def _scanimage_roi_count(roi_metadata):
+    if not isinstance(roi_metadata, dict):
+        return None
+    roi_groups = roi_metadata.get("RoiGroups", {})
+    imaging = roi_groups.get("imagingRoiGroup", {})
+    rois = imaging.get("rois")
+    if rois is None:
+        return None
+    if isinstance(rois, dict) and "_ArrayData_" in rois:
+        return 0
+    if isinstance(rois, (list, tuple)):
+        return len(rois)
+    if isinstance(rois, dict):
+        return 1
+    return None
+
+
+def scanimage_acquisition_metadata(
+        metadata, roi_metadata=None, configured_nplanes=None):
+    """Infer safe Suite2p acquisition settings from ScanImage TIFF metadata."""
+    frame_key = "SI.hRoiManager.scanFrameRate"
+    volume_key = "SI.hRoiManager.scanVolumeRate"
+    stack_key = "SI.hStackManager.enable"
+    slices_key = "SI.hStackManager.numSlices"
+    actual_slices_key = "SI.hStackManager.actualNumSlices"
+    frames_per_volume_key = (
+        "SI.hStackManager.numFramesPerVolumeWithFlyback"
+    )
+    discard_flyback_key = "SI.hFastZ.discardFlybackFrames"
+    discard_flyback_count_key = "SI.hFastZ.numDiscardFlybackFrames"
+
+    frame_rate = _metadata_float(metadata, frame_key)
+    volume_rate = _metadata_float(metadata, volume_key)
+    stack_enabled = _metadata_bool(metadata.get(stack_key, False))
+    num_slices = max(
+        1, _metadata_int(
+            metadata, actual_slices_key, _metadata_int(metadata, slices_key, 1)
+        )
+    )
+    frames_per_volume = max(
+        1, _metadata_int(metadata, frames_per_volume_key, num_slices)
+    )
+    discard_flyback = _metadata_bool(metadata.get(discard_flyback_key, False))
+    num_discard_flyback = max(
+        0, _metadata_int(
+            metadata,
+            discard_flyback_count_key,
+            max(0, frames_per_volume - num_slices),
+        )
+    )
+    metadata_is_multiplane = stack_enabled and (
+        num_slices > 1 or frames_per_volume > 1
+    )
+    if metadata_is_multiplane and frames_per_volume > num_slices and not discard_flyback:
+        nplanes = frames_per_volume
+        ignore_flyback = list(range(num_slices, frames_per_volume))
+    elif metadata_is_multiplane:
+        nplanes = num_slices
+        ignore_flyback = []
+    else:
+        nplanes = 1
+        ignore_flyback = []
+
+    if configured_nplanes is not None:
+        configured_nplanes = max(1, int(configured_nplanes))
+        plane_mismatch = (
+            slices_key in metadata
+            and configured_nplanes not in {num_slices, frames_per_volume, nplanes}
+        )
+    else:
+        plane_mismatch = False
+
+    if metadata_is_multiplane:
+        if volume_rate is not None:
+            sampling_frequency = volume_rate
+            source_key = volume_key
+        elif frame_rate is not None:
+            sampling_frequency = frame_rate / frames_per_volume
+            source_key = f"{frame_key}/{frames_per_volume_key}"
+        else:
+            return None
+    elif frame_rate is not None:
+        sampling_frequency = frame_rate
+        source_key = frame_key
+    else:
+        sampling_frequency = None
+        source_key = None
+
+    saved_channels = _metadata_int_list(metadata, "SI.hChannels.channelSave")
+    if not saved_channels:
+        saved_channels = _metadata_int_list(metadata, "SI.hScan2D.channels")
+    nchannels = len(saved_channels) if saved_channels else None
+    functional_chan = 1 if nchannels == 1 else None
+    lines_per_frame = _metadata_int(metadata, "SI.hRoiManager.linesPerFrame", None)
+    pixels_per_line = _metadata_int(metadata, "SI.hRoiManager.pixelsPerLine", None)
+    fov_um = _metadata_fov_um(metadata)
+    microns_per_pixel = None
+    if fov_um and lines_per_frame and pixels_per_line:
+        microns_per_pixel = [
+            fov_um[0] / lines_per_frame,
+            fov_um[1] / pixels_per_line,
+        ]
+
+    return {
+        "sampling_frequency": (
+            None if sampling_frequency is None else float(sampling_frequency)
+        ),
+        "source": "scanimage_tiff_metadata",
+        "source_key": source_key,
+        "scan_frame_rate": frame_rate,
+        "scan_volume_rate": volume_rate,
+        "stack_enabled": stack_enabled,
+        "num_slices": num_slices,
+        "frames_per_volume_with_flyback": frames_per_volume,
+        "discard_flyback": discard_flyback,
+        "num_discard_flyback": num_discard_flyback,
+        "nplanes": nplanes,
+        "ignore_flyback": ignore_flyback,
+        "configured_nplanes": configured_nplanes,
+        "plane_mismatch": plane_mismatch,
+        "saved_channels": saved_channels,
+        "nchannels": nchannels,
+        "functional_chan": functional_chan,
+        "lines_per_frame": lines_per_frame,
+        "pixels_per_line": pixels_per_line,
+        "bidirectional": _metadata_bool(
+            metadata.get("SI.hScan2D.bidirectional", False)
+        ),
+        "scan_mode": metadata.get("SI.hScan2D.scanMode"),
+        "scan_type": metadata.get("SI.hRoiManager.scanType"),
+        "scan_zoom_factor": _metadata_float(metadata, "SI.hRoiManager.scanZoomFactor"),
+        "fov_um": fov_um,
+        "microns_per_pixel": microns_per_pixel,
+        "mroi_enabled": _metadata_bool(metadata.get("SI.hRoiManager.mroiEnable", False)),
+        "scanimage_roi_count": _scanimage_roi_count(roi_metadata),
+    }
+
+
+def sampling_frequency_from_scanimage_metadata(metadata, configured_nplanes=None):
+    """Determine Suite2p's per-plane sampling rate from ScanImage metadata."""
+    result = scanimage_acquisition_metadata(
+        metadata, configured_nplanes=configured_nplanes
+    )
+    if result["sampling_frequency"] is None:
+        return None
+    return result
+
+
+def read_scanimage_acquisition_metadata(filename, configured_nplanes=None):
+    """Read ScanImage static metadata without loading TIFF image data."""
+    try:
+        with open(filename, "rb") as file_handle:
+            metadata_result = read_scanimage_metadata(file_handle)
+        metadata = metadata_result[0]
+        roi_metadata = metadata_result[1] if len(metadata_result) > 1 else None
+    except (OSError, TypeError, ValueError, KeyError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    result = scanimage_acquisition_metadata(
+        metadata,
+        roi_metadata=roi_metadata,
+        configured_nplanes=configured_nplanes,
+    )
+    result["filename"] = os.fspath(filename)
+    return result
+
+
+def read_scanimage_sampling_frequency(filename, configured_nplanes=None):
+    result = read_scanimage_acquisition_metadata(
+        filename, configured_nplanes=configured_nplanes
+    )
+    if result is None or result["sampling_frequency"] is None:
+        return None
+    return result
+
+
+def _sample_filenames(filenames, max_files):
+    filenames = [os.fspath(filename) for filename in filenames]
+    if len(filenames) > max_files:
+        indices = np.linspace(0, len(filenames) - 1, max_files, dtype=int)
+        filenames = [filenames[index] for index in np.unique(indices)]
+    return filenames
+
+
+def infer_tiff_acquisition_metadata(
+        filenames, configured_nplanes=None, max_files=20, rtol=1e-4):
+    """Infer and cross-check safe ScanImage acquisition metadata across TIFF files."""
+    filenames = _sample_filenames(filenames, max_files=max_files)
+    if not filenames:
+        return None
+
+    results = [
+        result
+        for filename in filenames
+        if (result := read_scanimage_acquisition_metadata(
+            filename, configured_nplanes=configured_nplanes
+        )) is not None
+    ]
+    if not results:
+        return None
+    if len(results) != len(filenames):
+        raise ValueError(
+            "ScanImage acquisition metadata was missing from "
+            f"{len(filenames) - len(results)} of {len(filenames)} sampled TIFFs"
+        )
+
+    rates = np.array([
+        result["sampling_frequency"]
+        for result in results
+        if result["sampling_frequency"] is not None
+    ], dtype=float)
+    if rates.size and not np.allclose(rates, rates[0], rtol=rtol, atol=1e-6):
+        raise ValueError(
+            "ScanImage TIFF sampling frequencies are inconsistent: "
+            + ", ".join(f"{rate:.8g}" for rate in np.unique(rates))
+        )
+    for key in ("nplanes", "nchannels", "ignore_flyback", "saved_channels"):
+        values = [result[key] for result in results]
+        if any(value != values[0] for value in values[1:]):
+            raise ValueError(
+                f"ScanImage TIFF {key} metadata are inconsistent: {values}"
+            )
+    if any(result["plane_mismatch"] for result in results):
+        metadata_planes = sorted(
+            {result["num_slices"] for result in results}
+        )
+        metadata_frames = sorted(
+            {result["frames_per_volume_with_flyback"] for result in results}
+        )
+        raise ValueError(
+            f"Configured nplanes={configured_nplanes} does not match "
+            f"ScanImage numSlices={metadata_planes} or "
+            f"framesPerVolumeWithFlyback={metadata_frames}"
+        )
+
+    result = dict(results[0])
+    result["files_checked"] = len(results)
+    result["files_requested"] = len(filenames)
+    return result
+
+
+def infer_tiff_sampling_frequency(
+        filenames, configured_nplanes=None, max_files=20, rtol=1e-4):
+    """Infer and cross-check a ScanImage sampling rate across TIFF files."""
+    filenames = _sample_filenames(filenames, max_files=max_files)
+    if not filenames:
+        return None
+
+    results = [
+        result
+        for filename in filenames
+        if (result := read_scanimage_sampling_frequency(
+            filename, configured_nplanes=configured_nplanes
+        )) is not None
+    ]
+    if not results:
+        return None
+    if len(results) != len(filenames):
+        raise ValueError(
+            "ScanImage sampling-rate metadata was missing from "
+            f"{len(filenames) - len(results)} of {len(filenames)} sampled TIFFs"
+        )
+
+    rates = np.array(
+        [result["sampling_frequency"] for result in results], dtype=float
+    )
+    if not np.allclose(rates, rates[0], rtol=rtol, atol=1e-6):
+        raise ValueError(
+            "ScanImage TIFF sampling frequencies are inconsistent: "
+            + ", ".join(f"{rate:.8g}" for rate in np.unique(rates))
+        )
+    if any(result["plane_mismatch"] for result in results):
+        metadata_planes = sorted(
+            {result["num_slices"] for result in results}
+        )
+        metadata_frames = sorted(
+            {result["frames_per_volume_with_flyback"] for result in results}
+        )
+        raise ValueError(
+            f"Configured nplanes={configured_nplanes} does not match "
+            f"ScanImage numSlices={metadata_planes} or "
+            f"framesPerVolumeWithFlyback={metadata_frames}"
+        )
+
+    result = dict(results[0])
+    result["files_checked"] = len(results)
+    result["files_requested"] = len(filenames)
+    return result
+
 
 def open_tiff(file, sktiff):
     """

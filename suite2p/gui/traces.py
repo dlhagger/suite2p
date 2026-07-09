@@ -9,6 +9,11 @@ from qtpy.QtWidgets import QLabel, QComboBox, QPushButton, QLineEdit, QCheckBox
 def plot_trace(parent):
     parent.p3.clear()
     ax = parent.p3.getAxis("left")
+    if len(parent.imerge) == 0:
+        parent.fmin, parent.fmax = 0, 1
+        ax.setTicks([[]])
+        parent.p3.setYRange(parent.fmin, parent.fmax)
+        return
     if len(parent.imerge) == 1:
         n = parent.imerge[0]
         f = parent.Fcell[n, :]
@@ -21,7 +26,11 @@ def plot_trace(parent):
             fmax = np.maximum(f.max(), fneu.max())
             fmin = np.minimum(f.min(), fneu.min())
         #sp from 0 to fmax
-        sp /= sp.max()
+        spmax = sp.max()
+        if spmax > 0:
+            sp = sp / spmax
+        else:
+            sp = np.zeros_like(sp)
         #agus
         sp *= fmax - fmin
         #sp += fmin*0.95

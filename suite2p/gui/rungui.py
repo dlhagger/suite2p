@@ -16,6 +16,7 @@ from superqt import QCollapsible
 from . import io, utils
 from .rungui_utils import Suite2pWorker, XStream
 from .. import default_settings, user_settings, SETTINGS_FOLDER, default_db, parameters
+from ..io import get_file_list, infer_tiff_acquisition_metadata
 
 import logging 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ DB_KEYS = [  "input_format", "look_one_level_down",
              "h5py_key", "nwb_series", "force_sktiff"
         ]
 FILE_KEYS = ["data_path", "save_path0", "fast_disk"]
-COMBO_KEYS = ["input_format", "algorithm", "img"]
+COMBO_KEYS = ["input_format", "algorithm", "img", "roi_source"]
 
 ### custom QDialog with an editable list 
 class BatchView(QDialog):
@@ -215,10 +216,11 @@ def set_default_db(DB, db):
 def set_default_settings(SETTINGS, settings):
     for key in SETTINGS.keys():
         if "gui_name" not in SETTINGS[key]:
-            set_default_settings(SETTINGS[key], settings[key])
-        else:
+            subsection = settings.get(key, {})
+            if isinstance(subsection, dict):
+                set_default_settings(SETTINGS[key], subsection)
+        elif key in settings:
             SETTINGS[key]["default"] = settings[key]   
-            del settings[key]
 
 ### custom QMainWindow which allows user to fill in settings and run suite2p!
 class RunWindow(QMainWindow):
@@ -245,6 +247,9 @@ class RunWindow(QMainWindow):
         self.batch_list = []
 
         self.extra_keys = {}
+        self.fs_metadata_info = None
+        self.tiff_metadata_info = None
+        self.metadata_prefills = {}
         self.create_menu_bar()
 
         self.db = default_db()
@@ -334,9 +339,11 @@ class RunWindow(QMainWindow):
                                                           settings=get_settings(self.SETTINGS, self.settings_gui))
         set_default_settings(self.SETTINGS, settings)
         set_settings(self.SETTINGS, self.settings_gui)
+        self.update_roi_source_visibility()
         if db is not None:
             set_default_db(self.DB, db) # check if any db keys are in settings
             set_db(self.DB, self.db_gui, parent=self)
+            self.update_sampling_frequency_from_metadata()
             if len(self.DB["data_path"]) > 0:
                 self.runButton.setEnabled(True)
                 self.addToBatch.setEnabled(True)
@@ -362,6 +369,7 @@ class RunWindow(QMainWindow):
                 db = np.load(filename, allow_pickle=True).item()
         set_default_db(self.DB, db)
         set_db(self.DB, self.db_gui, parent=self)
+        self.update_sampling_frequency_from_metadata()
 
         for key in db.keys():
             print(f"key {key} not in GUI, saved in backend in DB for running pipeline")
@@ -370,6 +378,8 @@ class RunWindow(QMainWindow):
     def create_db_settings_inputs(self):
         self.db_gui = {}
         self.settings_gui = {}
+        self.settings_labels = {}
+        self.settings_sections = {}
 
         XLfont = "QLabel {font-size: 12pt; font: Arial; font-weight: bold;}"
         bigfont = "QLabel {font-size: 10pt; font: Arial; font-weight: bold;}"
@@ -454,6 +464,10 @@ class RunWindow(QMainWindow):
             self.layout.addWidget(qlabel, b, cw, 1, 1)
             self.layout.addWidget(self.settings_gui[key], b, cw+1, 1, 1)
             b+=1
+        self.fs_source_label = QLabel("")
+        self.fs_source_label.setWordWrap(True)
+        self.layout.addWidget(self.fs_source_label, b, cw, 1, 2)
+        b += 1
 
         scrollArea = QScrollArea()
         scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
@@ -468,9 +482,20 @@ class RunWindow(QMainWindow):
 
         labels = ["run", "io", "registration", "detection", "classification", 
                   "extraction", "dcnv_preprocess"]
-        b = 0
+        self.manual_mode_note = QLabel(
+            "Manual ROI mode runs registration and prepares images for drawing. "
+            "Automatic detection and classification settings are hidden."
+        )
+        self.manual_mode_note.setWordWrap(True)
+        self.manual_mode_note.setStyleSheet(
+            "QLabel { color: rgb(180, 220, 255); padding: 6px; }"
+        )
+        layoutScroll.addWidget(self.manual_mode_note, 0, 0, 1, 1)
+        b = 1
         for label in labels:
             qbox = QCollapsible(f"{label} settings")
+            self.settings_sections[label] = qbox
+            self.settings_labels[label] = {}
             qbox._toggle_btn.setStyleSheet(bigfont)
             qboxG = QGridLayout()
             _content = QWidget()
@@ -480,6 +505,7 @@ class RunWindow(QMainWindow):
             for key in self.SETTINGS[label].keys():
                 if "gui_name" in self.SETTINGS[label][key]:
                     qlabel = create_input(key, self.SETTINGS[label], self.settings_gui[label])
+                    self.settings_labels[label][key] = qlabel
                     qboxG.addWidget(qlabel, bl, 0, 1, 1)
                     qboxG.addWidget(self.settings_gui[label][key], bl, 1, 1, 1)
                     bl+=1
@@ -506,13 +532,243 @@ class RunWindow(QMainWindow):
             layoutScroll.addWidget(qbox, b, 0, 1, 1)
             b+=1
         layoutScroll.addWidget(QLabel(""), b, 0, 1, 1)
-        layoutScroll.setColumnStretch(0, b)      
+        layoutScroll.setColumnStretch(0, b)
+
+        roi_source = self.settings_gui["run"]["roi_source"]
+        roi_source.currentTextChanged.connect(self.update_roi_source_visibility)
+        self.settings_gui["extraction"]["neuropil_extract"].toggled.connect(
+            self.update_neuropil_visibility
+        )
+        self.settings_gui["run"]["do_deconvolution"].toggled.connect(
+            self.update_deconvolution_visibility
+        )
+        self.db_gui["input_format"].currentTextChanged.connect(
+            self.update_sampling_frequency_from_metadata
+        )
+        self.db_gui["look_one_level_down"].toggled.connect(
+            self.update_sampling_frequency_from_metadata
+        )
+        self.db_gui["nplanes"].editingFinished.connect(
+            self.update_sampling_frequency_from_metadata
+        )
+        self.settings_gui["fs"].textEdited.connect(self.mark_sampling_frequency_manual)
+        self.update_roi_source_visibility(roi_source.currentText())
+
+    def update_sampling_frequency_from_metadata(self, *_):
+        """Populate safe settings from consistent ScanImage TIFF metadata."""
+        if self.db_gui["input_format"].currentText() != "tif":
+            self.fs_metadata_info = None
+            self.tiff_metadata_info = None
+            self.fs_source_label.clear()
+            return
+
+        try:
+            db = get_db(self.DB, self.db_gui, self.extra_keys)
+            if not db["data_path"]:
+                return
+            filenames, _ = get_file_list(db)
+            result = infer_tiff_acquisition_metadata(filenames)
+        except Exception as exc:
+            self.fs_metadata_info = None
+            self.tiff_metadata_info = None
+            self.fs_source_label.setStyleSheet("color: rgb(255, 180, 120);")
+            self.fs_source_label.setText(f"ScanImage metadata not applied: {exc}")
+            return
+
+        if result is None:
+            self.fs_metadata_info = None
+            self.tiff_metadata_info = None
+            self.fs_source_label.setStyleSheet("color: rgb(200, 200, 200);")
+            self.fs_source_label.setText(
+                "No ScanImage metadata found; using manual acquisition settings."
+            )
+            return
+
+        self.tiff_metadata_info = result
+        self.fs_metadata_info = (
+            result if result.get("sampling_frequency") is not None else None
+        )
+        applied = self.apply_scanimage_metadata_prefills(result)
+        frequency = result["sampling_frequency"]
+        if frequency is not None:
+            self.settings_gui["fs"].setText(f"{frequency:.8g}")
+            self.settings_gui["fs"].setToolTip(
+                f"Detected from {result['source_key']} in ScanImage TIFF metadata."
+            )
+        self.fs_source_label.setStyleSheet("color: rgb(180, 220, 255);")
+        self.fs_source_label.setText(self.scanimage_metadata_summary(applied=applied))
+
+    def _format_db_prefill_value(self, key, value):
+        if value is None or value == []:
+            return ""
+        if self.DB[key]["type"] in (list, tuple):
+            return list_to_str(value)
+        return str(value)
+
+    def apply_scanimage_metadata_prefills(self, result):
+        """Apply only metadata-derived DB values that are safe to infer."""
+        prefills = {
+            "nplanes": result.get("nplanes"),
+            "nchannels": result.get("nchannels"),
+            "ignore_flyback": result.get("ignore_flyback"),
+        }
+        if result.get("functional_chan") is not None:
+            prefills["functional_chan"] = result["functional_chan"]
+
+        applied = []
+        built_in_db = default_db()
+        for key, value in prefills.items():
+            if key not in self.db_gui or value is None:
+                continue
+            target = self._format_db_prefill_value(key, value)
+            current = self.db_gui[key].text().strip()
+            previous = self.metadata_prefills.get(key)
+            built_in = self._format_db_prefill_value(key, built_in_db.get(key))
+            can_prefill = current in {"", built_in} or current == previous
+            if not can_prefill:
+                continue
+            self.metadata_prefills[key] = target
+            if current == target:
+                continue
+            self.db_gui[key].setText(target)
+            self.db_gui[key].setToolTip(
+                "Auto-detected from ScanImage TIFF metadata."
+            )
+            applied.append(key)
+        return applied
+
+    def scanimage_metadata_summary(self, applied=None, manual_fs=False):
+        """Human-readable summary of ScanImage metadata used by the GUI."""
+        info = self.tiff_metadata_info
+        if info is None:
+            return ""
+        applied = applied or []
+        parts = []
+        frequency = info.get("sampling_frequency")
+        if frequency is not None:
+            if manual_fs:
+                parts.append(f"fs manual; metadata reports {frequency:.6g} Hz")
+            else:
+                parts.append(f"{frequency:.6g} Hz")
+        if info.get("nplanes") is not None:
+            nplanes = info["nplanes"]
+            parts.append(f"{nplanes} plane{'s' if nplanes != 1 else ''}")
+        if info.get("nchannels") is not None:
+            nchannels = info["nchannels"]
+            channel_text = f"{nchannels} saved channel{'s' if nchannels != 1 else ''}"
+            if info.get("saved_channels"):
+                saved = ", ".join(str(ch) for ch in info["saved_channels"])
+                channel_text += f" (ScanImage ch {saved})"
+            parts.append(channel_text)
+        if info.get("pixels_per_line") and info.get("lines_per_frame"):
+            parts.append(f"{info['pixels_per_line']}×{info['lines_per_frame']} px")
+        if info.get("ignore_flyback"):
+            parts.append(f"ignore flyback {info['ignore_flyback']}")
+        elif info.get("nplanes") is not None:
+            parts.append("no flyback")
+        if info.get("microns_per_pixel"):
+            ypix, xpix = info["microns_per_pixel"]
+            parts.append(f"{ypix:.3g}×{xpix:.3g} µm/px")
+        if info.get("bidirectional"):
+            parts.append("bidirectional")
+        if info.get("scan_mode"):
+            parts.append(str(info["scan_mode"]))
+        if info.get("mroi_enabled"):
+            roi_count = info.get("scanimage_roi_count")
+            if roi_count:
+                parts.append(f"{roi_count} ScanImage ROIs detected")
+            else:
+                parts.append("ScanImage MROI detected")
+
+        checked = info.get("files_checked", 1)
+        prefix = (
+            f"Auto-detected from ScanImage metadata "
+            f"({checked} TIFF{'s' if checked != 1 else ''} checked): "
+        )
+        text = prefix + "; ".join(parts)
+        if applied:
+            text += f". Prefilled: {', '.join(applied)}"
+        return text
+
+    @QtCore.Slot(str)
+    def mark_sampling_frequency_manual(self, text):
+        """Keep detected metadata visible when the user manually overrides fs."""
+        if self.fs_metadata_info is None:
+            return
+        try:
+            current = float(text)
+        except ValueError:
+            current = None
+        detected = self.fs_metadata_info["sampling_frequency"]
+        if current is not None and np.isclose(current, detected, rtol=1e-9):
+            return
+        self.fs_source_label.setStyleSheet("color: rgb(255, 220, 140);")
+        self.fs_source_label.setText(self.scanimage_metadata_summary(manual_fs=True))
+
+    @QtCore.Slot(str)
+    def update_roi_source_visibility(self, roi_source=None):
+        """Show only settings that affect the selected ROI workflow."""
+        if roi_source is None:
+            roi_source = self.settings_gui["run"]["roi_source"].currentText()
+        manual = roi_source == "manual"
+
+        for section in ("detection", "classification"):
+            self.settings_sections[section].setVisible(not manual)
+
+        hidden_fields = {
+            "run": ("do_detection",),
+            "extraction": ("snr_threshold", "batch_size", "lam_percentile"),
+        }
+        for section, keys in hidden_fields.items():
+            for key in keys:
+                self.settings_labels[section][key].setVisible(not manual)
+                self.settings_gui[section][key].setVisible(not manual)
+
+        manual_only_fields = {
+            "run": ("sam3_enabled",),
+        }
+        for section, keys in manual_only_fields.items():
+            for key in keys:
+                self.settings_labels[section][key].setVisible(manual)
+                self.settings_gui[section][key].setVisible(manual)
+
+        title = (
+            "manual trace extraction settings"
+            if manual
+            else "extraction settings"
+        )
+        self.settings_sections["extraction"]._toggle_btn.setText(title)
+        self.manual_mode_note.setVisible(manual)
+        self.update_neuropil_visibility()
+        self.update_deconvolution_visibility()
+
+    @QtCore.Slot(bool)
+    def update_neuropil_visibility(self, checked=None):
+        """Hide neuropil parameters when neuropil extraction is disabled."""
+        if checked is None:
+            checked = self.settings_gui["extraction"]["neuropil_extract"].isChecked()
+        dependent = (
+            "neuropil_coefficient",
+            "inner_neuropil_radius",
+            "min_neuropil_pixels",
+            "circular_neuropil",
+        )
+        for key in dependent:
+            self.settings_labels["extraction"][key].setVisible(bool(checked))
+            self.settings_gui["extraction"][key].setVisible(bool(checked))
+
+    @QtCore.Slot(bool)
+    def update_deconvolution_visibility(self, checked=None):
+        """Show baseline controls only when spike deconvolution will run."""
+        if checked is None:
+            checked = self.settings_gui["run"]["do_deconvolution"].isChecked()
+        self.settings_sections["dcnv_preprocess"].setVisible(bool(checked))
         
          
         
     def save_db_settings(self):
         db = get_db(self.DB, self.db_gui, self.extra_keys)
-        settings = get_settings(self.SETTINGS, self.settings_gui)
+        settings = self.settings_with_sampling_provenance()
         save_path0 = db["save_path0"] if db["save_path0"] is not None else db["data_path"][0]
         self.save_path = os.path.join(save_path0, db["save_folder"])
         settings_file = os.path.join(self.save_path, "settings.npy")
@@ -521,6 +777,31 @@ class RunWindow(QMainWindow):
             os.makedirs(self.save_path)
         np.save(settings_file, settings)
         np.save(db_file, db)
+
+    def settings_with_sampling_provenance(self):
+        """Return GUI settings plus the origin of the selected sampling rate."""
+        settings = get_settings(self.SETTINGS, self.settings_gui)
+        for key in (
+            "fs_source",
+            "fs_detected",
+            "fs_metadata_key",
+            "fs_metadata_files_checked",
+        ):
+            settings.pop(key, None)
+        info = self.fs_metadata_info
+        if info is None:
+            settings["fs_source"] = "manual"
+            return settings
+
+        detected = info["sampling_frequency"]
+        settings["fs_detected"] = detected
+        settings["fs_metadata_key"] = info["source_key"]
+        settings["fs_metadata_files_checked"] = info["files_checked"]
+        if np.isclose(settings["fs"], detected, rtol=1e-9):
+            settings["fs_source"] = info["source"]
+        else:
+            settings["fs_source"] = "manual_override"
+        return settings
         
     def add_batch(self):
         self.save_db_settings()
@@ -603,7 +884,7 @@ class RunWindow(QMainWindow):
         
     def save_settings(self):
         name = QFileDialog.getSaveFileName(self, "Settings name (*.npy)")
-        settings = get_settings(self.SETTINGS, self.settings_gui)
+        settings = self.settings_with_sampling_provenance()
         if len(name) > 0 and name[0] is not None:
             name = name[0]
             np.save(name, settings)
@@ -657,6 +938,7 @@ class RunWindow(QMainWindow):
                 self.runButton.setEnabled(True)
                 self.addToBatch.setEnabled(True)
                 self.remove_path_btn.setEnabled(True)
+                self.update_sampling_frequency_from_metadata()
             else:
                 self.db_gui[ftype].setText(name)
                 self.db_gui[ftype].setToolTip(name)
@@ -692,3 +974,4 @@ class RunWindow(QMainWindow):
             self.runButton.setEnabled(False)
             self.addToBatch.setEnabled(False)
             self.remove_path_btn.setEnabled(False)
+        self.update_sampling_frequency_from_metadata()

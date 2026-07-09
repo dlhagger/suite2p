@@ -240,7 +240,7 @@ SETTINGS = {
         "min": 0.01,
         "max": np.inf,
         "default": 10.,
-        "description": "Sampling rate per plane.",
+        "description": "Sampling rate per plane. The run GUI auto-detects this from ScanImage TIFF metadata when available; the value can be manually overridden.",
     },
     "diameter": {
         "gui_name": "Diameter",
@@ -251,6 +251,22 @@ SETTINGS = {
         "description": "ROI diameter in Y and X pixels for sourcery and cellpose detection.",
     },  
     "run": {
+        "roi_source": {
+            "gui_name": "ROI source",
+            "type": str,
+            "min": None,
+            "max": None,
+            "default": "automatic",
+            "description": "Choose automatic detection or initialize a registered session for manual masks ['automatic', 'manual'].",
+        },
+        "sam3_enabled": {
+            "gui_name": "Enable SAM3 assist",
+            "type": bool,
+            "min": None,
+            "max": None,
+            "default": False,
+            "description": "Enable optional SAM3 point-prompted masks in manual ROI mode.",
+        },
         "do_registration": {
             "gui_name": "Do registration",
             "type": int,
@@ -908,11 +924,28 @@ def default_settings():
     settings["version"] = version  
     return settings
 
+
+def merge_settings(defaults, overrides):
+    """Recursively overlay saved settings without dropping new defaults."""
+    for key, value in overrides.items():
+        if (
+            key in defaults
+            and isinstance(defaults[key], dict)
+            and isinstance(value, dict)
+        ):
+            merge_settings(defaults[key], value)
+        else:
+            defaults[key] = value
+    return defaults
+
+
 def user_settings():
     """ user-default options to run pipeline """
     if (SETTINGS_FOLDER / "settings_user.npy").exists():
-        settings = np.load(SETTINGS_FOLDER / "settings_user.npy", allow_pickle=True).item()
-        settings = {**default_settings(), **settings}
+        saved = np.load(
+            SETTINGS_FOLDER / "settings_user.npy", allow_pickle=True
+        ).item()
+        settings = merge_settings(default_settings(), saved)
     else:
         settings = default_settings()
     return settings
@@ -1008,5 +1041,3 @@ def convert_settings_orig(settings_in, db=default_db(), settings=default_setting
     if "spikedetect" in settings_in:
         settings["run"]["do_deconvolution"] = settings_in.pop("spikedetect")
     return db, settings, settings_in
-
-                

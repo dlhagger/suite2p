@@ -2,6 +2,10 @@
 Copyright © 2023 Howard Hughes Medical Institute, Authored by Carsen Stringer and Marius Pachitariu.
 """
 from pathlib import Path
+try:
+    from matplotlib import colormaps
+except ImportError:
+    colormaps = None
 import matplotlib.cm
 import numpy as np
 import pyqtgraph as pg
@@ -11,6 +15,21 @@ from matplotlib.colors import hsv_to_rgb
 
 import suite2p.gui.merge
 from . import io
+
+
+def normalize_istat(istat, lo=None, hi=None):
+    """Normalize a statistic vector to [0, 1], tolerating constants/NaNs."""
+    istat = np.asarray(istat, dtype=np.float32).copy()
+    if lo is None:
+        lo = np.nanmin(istat) if istat.size else 0.0
+    if hi is None:
+        hi = np.nanmax(istat) if istat.size else 0.0
+    denom = hi - lo
+    if np.isfinite(denom) and denom > 0:
+        istat = (istat - lo) / denom
+    else:
+        istat = np.zeros_like(istat)
+    return np.nan_to_num(np.maximum(0, np.minimum(1, istat)))
 
 
 def make_buttons(parent, b0):
@@ -108,6 +127,12 @@ def make_colors(parent):
     ncells = len(parent.stat)
     parent.colors["cols"] = np.zeros((len(parent.color_names), ncells, 3), np.uint8)
     parent.colors["istat"] = np.zeros((len(parent.color_names), ncells), np.float32)
+    if ncells == 0:
+        parent.randcols = np.zeros((0,), np.float32)
+        parent.colors["colorbar"] = [
+            [0, 0.5, 1] for _ in range(len(parent.color_names))
+        ]
+        return
     np.random.seed(seed=0)
     allcols = np.random.random((ncells,))
     if "meanImg_chan2" in parent.ops:
@@ -133,9 +158,7 @@ def make_colors(parent):
                 istat99 = np.percentile(istat, 98)
                 parent.colors["colorbar"].append(
                     [istat1, (istat99 - istat1) / 2 + istat1, istat99])
-                istat = istat - istat1
-                istat = istat / (istat99 - istat1)
-                istat = np.maximum(0, np.minimum(1, istat))
+                istat = normalize_istat(istat, istat1, istat99)
             else:
                 istat = np.expand_dims(parent.probcell, axis=1)
                 parent.parent.colors["colorbar"].append([0.0, .5, 1.0])
@@ -273,11 +296,14 @@ def init_masks(parent):
         parent.roi_text_labels.append(txt)
     parent.roi_text_labels = parent.roi_text_labels[::-1]
 
-    parent.rois["LamMean"] = LamAll[LamAll > 1e-10].mean()
+    nonzero_lam = LamAll[LamAll > 1e-10]
+    parent.rois["LamMean"] = nonzero_lam.mean() if nonzero_lam.size else 1.0
     parent.rois["LamNorm"] = np.maximum(
         0, np.minimum(1, 0.75 * parent.rois["Lam"][:, 0] / parent.rois["LamMean"]))
     parent.colors["RGB"] = np.zeros((2, cols.shape[0], Ly, Lx, 4), np.uint8)
 
+    if ncells == 0:
+        return
     for c in range(0, cols.shape[0]):
         rgb_masks(parent, cols[c], c)
 
@@ -312,6 +338,10 @@ def draw_masks(parent):  #settings, stat, settings_plot, iscell, ichosen):
     view = parent.ops_plot["view"]
     color = parent.ops_plot["color"]
     opacity = parent.ops_plot["opacity"]
+
+    if ncells == 0:
+        blank = np.zeros((parent.Ly, parent.Lx, 4), np.uint8)
+        return blank.copy(), blank.copy()
 
     wplot = int(1 - parent.iscell[parent.ichosen])
     # reset transparency
@@ -369,16 +399,13 @@ def chan2_masks(parent):
 def custom_masks(parent):
     c = 9
     n = np.array(parent.imerge)
-    istat = parent.custom_mask
+    istat = np.asarray(parent.custom_mask, dtype=np.float32).copy()
     istat1 = np.percentile(istat, 1)
     istat99 = np.percentile(istat, 99)
     cl = [istat1, (istat99 - istat1) / 2 + istat1, istat99]
-    istat -= istat1
-    istat /= istat99 - istat1
-    istat = np.maximum(0, np.minimum(1, istat))
+    istat = normalize_istat(istat, istat1, istat99)
 
     parent.colors["colorbar"][c] = cl
-    istat = istat / istat.max()
     col = istat_transform(istat, parent.ops_plot["colormap"])
 
     parent.colors["cols"][c] = col
@@ -392,9 +419,10 @@ def rastermap_masks(parent):
     n = np.array(parent.imerge)
     istat = parent.isort
     # no 1D variable loaded -- leave blank
-    parent.colors["colorbar"][c] = ([0, istat.max() / 2, istat.max()])
+    istat_max = istat.max() if istat.size else 0
+    parent.colors["colorbar"][c] = ([0, istat_max / 2, istat_max])
 
-    istat = istat / istat.max()
+    istat = normalize_istat(istat, 0, istat_max)
     col = istat_transform(istat, parent.ops_plot["colormap"])
     col[parent.isort == -1] = 0
     parent.colors["cols"][c] = col
@@ -411,14 +439,19 @@ def beh_masks(parent):
                     (nb, parent.bin)).mean(axis=1)
     sn -= sn.mean()
     snstd = (sn**2).mean()**0.5
-    cc = np.dot(parent.Fbin, sn.T) / parent.Fbin.shape[-1] / (parent.Fstd * snstd)
+    denom = parent.Fstd * snstd
+    cc = np.divide(
+        np.dot(parent.Fbin, sn.T) / parent.Fbin.shape[-1],
+        denom,
+        out=np.zeros_like(parent.Fstd, dtype=np.float32),
+        where=denom > 0,
+    )
     cc[n] = cc.mean()
     istat = cc
     inactive = False
     istat_min = istat.min()
     istat_max = istat.max()
-    istat = istat - istat.min()
-    istat = istat / istat.max()
+    istat = normalize_istat(istat, istat_min, istat_max)
     col = istat_transform(istat, parent.ops_plot["colormap"])
     parent.colors["cols"][c] = col
     parent.colors["istat"][c] = istat.flatten()
@@ -433,15 +466,20 @@ def corr_masks(parent):
     n = np.array(parent.imerge)
     sn = parent.Fbin[n].mean(axis=-2).squeeze()
     snstd = (sn**2).mean()**0.5
-    cc = np.dot(parent.Fbin, sn.T) / parent.Fbin.shape[-1] / (parent.Fstd * snstd)
+    denom = parent.Fstd * snstd
+    cc = np.divide(
+        np.dot(parent.Fbin, sn.T) / parent.Fbin.shape[-1],
+        denom,
+        out=np.zeros_like(parent.Fstd, dtype=np.float32),
+        where=denom > 0,
+    )
     cc[n] = cc.mean()
     istat = cc
     parent.colors["colorbar"][c] = [
         istat.min(), (istat.max() - istat.min()) / 2 + istat.min(),
         istat.max()
     ]
-    istat = istat - istat.min()
-    istat = istat / istat.max()
+    istat = normalize_istat(istat)
     col = istat_transform(istat, parent.ops_plot["colormap"])
     parent.colors["cols"][c] = col
     parent.colors["istat"][c] = istat.flatten()
@@ -601,8 +639,11 @@ def istat_transform(istat, colormap="hsv"):
         icols = istat_hsv(istat)
     else:
         try:
-            cmap = matplotlib.cm.get_cmap(colormap)
-            icols = istat
+            if colormaps is not None:
+                cmap = colormaps.get_cmap(colormap)
+            else:
+                cmap = matplotlib.cm.get_cmap(colormap)
+            icols = np.asarray(istat).flatten()
             icols = cmap(icols)[:, :3]
             icols *= 255
             icols = icols.astype(np.uint8)

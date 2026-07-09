@@ -332,6 +332,11 @@ def run_plane(db, settings, db_path=None, stat=None):
                         os.path.join(db["save_path"], os.path.split(db[key])[1]))
                 
     elif settings["io"]["delete_bin"]:
+        if settings["run"].get("roi_source", "automatic") == "manual":
+            logger.warning(
+                "Keeping registered binaries because manual ROI extraction needs data.bin"
+            )
+            return outputs
         logger.info("deleting binary files")
         for key in ["reg_file", "reg_file_chan2", "raw_file", "raw_file_chan2"]:
             if key in db:
@@ -461,7 +466,12 @@ def run_s2p(db={}, settings=default_settings(), server={}):
         logger.info("total = %0.2f sec." % run_time)
 
         #### COMBINE PLANES or FIELDS OF VIEW ####
-        if len(settings_paths) > 1 and settings["io"]["combined"] and settings["run"]["do_detection"]:
+        if (
+            len(settings_paths) > 1
+            and settings["io"]["combined"]
+            and settings["run"]["do_detection"]
+            and settings["run"].get("roi_source", "automatic") == "automatic"
+        ):
             logger.info("Creating combined view")
             io.combined(save_folder, save=True)
 

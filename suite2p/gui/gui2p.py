@@ -447,11 +447,14 @@ class MainWindow(QMainWindow):
             else:
                 f = self.Spks
             ncells = len(self.stat)
-            self.Fbin = f[:, :nb * self.bin].reshape(
-                (ncells, nb, self.bin)).mean(axis=2)
-
-            self.Fbin -= self.Fbin.mean(axis=1)[:, np.newaxis]
-            self.Fstd = (self.Fbin**2).mean(axis=1)**0.5
+            if ncells == 0:
+                self.Fbin = np.zeros((0, nb), np.float32)
+                self.Fstd = np.zeros((0,), np.float32)
+            else:
+                self.Fbin = f[:, :nb * self.bin].reshape(
+                    (ncells, nb, self.bin)).mean(axis=2)
+                self.Fbin -= self.Fbin.mean(axis=1)[:, np.newaxis]
+                self.Fstd = (self.Fbin**2).mean(axis=1)**0.5
             self.trange = np.arange(0, self.Fcell.shape[1])
             # if in behavior-view, recompute
             if self.ops_plot["color"] == 8:
@@ -654,6 +657,10 @@ class MainWindow(QMainWindow):
     def ichosen_stats(self):
         n = self.ichosen
         self.ROIedit.setText(str(self.ichosen))
+        if len(self.stat) == 0:
+            for k in range(1, len(self.stats_to_show) + 1):
+                self.ROIstats[k].setText(self.stats_to_show[k - 1] + ": --")
+            return
         for k in range(1, len(self.stats_to_show) + 1):
             key = self.stats_to_show[k - 1]
             ival = self.stat[n][key] if key in self.stat[n] else 0
