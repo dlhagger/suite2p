@@ -58,6 +58,34 @@ models/sam3.pt
 
 The `models/` folder is gitignored so large model files stay out of the repository.
 
+### Apple Silicon / MPS
+
+In the Run Suite2p window, set **Torch device** to `auto` (the default for new
+settings) or `mps`. Auto selects an available CUDA GPU, then Apple MPS, then CPU.
+Older user defaults with `cuda` are automatically treated as `auto`. Explicit
+CPU/MPS choices, indexed CUDA devices, and settings loaded from run files keep
+their device choice. Registration, Cellpose, and SAM3 use the selected
+device. SAM3 resolves `auto` before calling Ultralytics. Fluorescence extraction
+keeps its existing CPU fallback because its sparse matrices are unsupported on MPS.
+
+Check GPU availability from the project environment:
+
+```bash
+.venv/bin/python -c "import torch; print('MPS built:', torch.backends.mps.is_built()); print('MPS available:', torch.backends.mps.is_available())"
+```
+
+Unavailable devices fall back to CPU with a log warning. Availability does not
+guarantee that every model operation supports MPS. If a run fails on an unsupported
+operation, select `cpu`, or try PyTorch's optional CPU fallback before launch:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python -m suite2p
+```
+
+MPS registration uses float32 rather than float64. Compare a short representative
+recording against CPU processing before using MPS for full recordings. Keep the
+registered binary when refining manual ROIs so traces can be extracted again.
+
 ### CITATION
 
 If you use this package in your research, please cite the [paper](https://www.biorxiv.org/content/10.64898/2026.02.04.703741v1):

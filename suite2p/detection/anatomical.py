@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from cellpose.models import CellposeModel
-    from cellpose import transforms, dynamics, core
+    from cellpose import transforms, dynamics
     from cellpose.utils import fill_holes_and_remove_small_masks
     from cellpose.transforms import normalize99
     CELLPOSE_INSTALLED = True
@@ -128,7 +128,8 @@ def roi_detect(mproj, diameter=None, settings=None,
                 diameter[1])
 
     pretrained_model = "cpsam" if pretrained_model is None else pretrained_model
-    model = CellposeModel(pretrained_model=pretrained_model, gpu=True if core.use_gpu() else False)
+    model = CellposeModel(pretrained_model=pretrained_model,
+                          device=device, gpu=device.type != "cpu")
     params = settings["params"] if not chan2 else settings["chan2_params"]
     params = {} if params is None else params
     masks = model.eval(mproj, diameter=diameter[1],

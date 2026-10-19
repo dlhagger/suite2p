@@ -253,9 +253,9 @@ class RunWindow(QMainWindow):
         self.create_menu_bar()
 
         self.db = default_db()
-        self.SETTINGS = parameters.SETTINGS
+        self.SETTINGS = copy.deepcopy(parameters.SETTINGS)
         parameters.add_descriptions(self.SETTINGS)
-        self.DB = parameters.DB
+        self.DB = copy.deepcopy(parameters.DB)
         parameters.add_descriptions(self.DB, dstr="db")
         # remove keys not in GUI
         remove_keys = [key for key in self.DB if key not in FILE_KEYS and 
