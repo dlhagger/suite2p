@@ -223,8 +223,8 @@ SETTINGS = {
         "type": str,
         "min": None,
         "max": None,
-        "default": "cuda",
-        "description": "Torch device using GPU ('cuda') or CPU ('cpu').",
+        "default": "auto",
+        "description": "Torch device: 'auto' selects CUDA, Apple MPS, then CPU. Use 'mps' for Apple GPU, 'cuda' or 'cuda:0' for NVIDIA, or 'cpu'. Unavailable devices fall back to CPU.",
     },
     "tau": {
         "gui_name": "Ca timescale",
@@ -945,6 +945,11 @@ def user_settings():
         saved = np.load(
             SETTINGS_FOLDER / "settings_user.npy", allow_pickle=True
         ).item()
+        # Older releases saved "cuda" as the default on every platform.
+        # Use portable automatic selection for those user defaults, while
+        # preserving explicit CPU/MPS choices and indexed CUDA devices.
+        if saved.get("torch_device") == "cuda":
+            saved["torch_device"] = "auto"
         settings = merge_settings(default_settings(), saved)
     else:
         settings = default_settings()

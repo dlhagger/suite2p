@@ -55,6 +55,7 @@ def extract_traces(f_in, cell_masks, neuropil_masks, batch_size=500,
     # Check if mps and force to be on the CPU so that extraction can be run
     # TODO: Once, sparse_coo_tensor works on sparseMPS backend, we should remove this check
     if device.type == 'mps':
+        logger.info("Using CPU for trace extraction: sparse masks are unsupported on MPS")
         device = torch.device('cpu')
 
     if neuropil_masks is not None:

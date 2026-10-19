@@ -12,12 +12,12 @@ import contextlib
 import numpy as np
 from scipy.stats import skew
 from scipy.io import loadmat
-import torch
 import logging 
 
 logger = logging.getLogger(__name__)
 
 from . import io, default_settings, default_db, pipeline, version_str
+from .devices import assign_torch_device as _assign_torch_device
 
 from functools import partial
 from pathlib import Path
@@ -107,34 +107,6 @@ def logger_setup(save_path=None):
         file.setFormatter(log_file_formatter)
         s2p_logger.addHandler(file)
 
-
-def _assign_torch_device(str_device):
-    """
-    Validate and return a torch device, falling back to CPU if unavailable.
-
-    Parameters
-    ----------
-    str_device : str
-        Device string, e.g. "cuda", "cpu", or "mps".
-
-    Returns
-    -------
-    device : torch.device
-        Validated torch device. Falls back to CPU if the requested device
-        is not available.
-    """
-    if str_device == "cpu":
-        logger.info("** using CPU **")
-        return torch.device(str_device)
-    else:
-        try:
-            device = torch.device(str_device)
-            _ = torch.zeros([1, 2, 3]).to(device)
-            logger.info(f"** torch.device('{str_device}') installed and working. **")
-            return torch.device(str_device)
-        except:
-            logger.info(f"torch.device('{str_device}') not working, using cpu.")
-            return torch.device("cpu")
 
 def _check_run_registration(settings, db):
     if settings["run"]["do_registration"] > 0:

@@ -16,6 +16,8 @@ from typing import Iterable
 import numpy as np
 from scipy import ndimage
 
+from .devices import assign_torch_device
+
 
 def normalize_image(image, lower=1.0, upper=99.0):
     """Robustly normalize a 2-D image to the interval [0, 1]."""
@@ -254,7 +256,7 @@ class UltralyticsSam3MaskProvider:
 
     def __init__(self, checkpoint_path=None, device=None, imgsz=1024, conf=0.0):
         self.checkpoint_path = resolve_sam3_checkpoint_path(checkpoint_path)
-        self.device = device
+        self.device = str(assign_torch_device(device))
         self.imgsz = int(imgsz)
         self.conf = float(conf)
         self.model = None
